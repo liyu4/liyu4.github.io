@@ -3,16 +3,17 @@
     
     <meta charset="utf-8">
      
-    <meta name="viewpoint" content="with=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="viewport" content="with=device-width, initial-scale=1, viewport-fit=cover">
     <title>[GO]Context在golang数据库连接池中的实践 | 自由.自在</title>
-    <meta name="description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置超时，以便整个ctx可以控制在预期的时间内执行，超时则不再继续执行，另外context也内置了deadline属性，开发者可以方便的控制自己的goroutine情况 。 ">
+    <meta name="description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置一个超时，以便整个ctx树可以控制在预期的时间内执行完，不管【成功/失败】，另外context也内置了deadline属性，开发者可以方便的控制自己开启的goroutine情况 。 ">
     <meta property="description" content="My site description" />
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bulma/0.7.4/css/bulma.min.css">
     <link rel="canonical" href="/2020/02/gocontext%E5%9C%A8golang%E6%95%B0%E6%8D%AE%E5%BA%93%E8%BF%9E%E6%8E%A5%E6%B1%A0%E4%B8%AD%E7%9A%84%E5%AE%9E%E8%B7%B5/" />
     <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.7.2/css/all.css" integrity="sha384-fnmOCqbTlWIlj8LyTjo7mOUStjsKC4pOpQbqyi7RrhN7udi9RwhKkMHpvLbHG9Sr" crossorigin="anonymous">
     <link rel="stylesheet" href="/css/style.css" />
+    <link rel='icon' href='/img/favicon.ico' type='image/x-icon' />
     <meta property="og:title" content="[GO]Context在golang数据库连接池中的实践" />
-<meta property="og:description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置超时，以便整个ctx可以控制在预期的时间内执行，超时则不再继续执行，另外context也内置了deadline属性，开发者可以方便的控制自己的goroutine情况 。" />
+<meta property="og:description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置一个超时，以便整个ctx树可以控制在预期的时间内执行完，不管【成功/失败】，另外context也内置了deadline属性，开发者可以方便的控制自己开启的goroutine情况 。" />
 <meta property="og:type" content="article" />
 <meta property="og:url" content="/2020/02/gocontext%E5%9C%A8golang%E6%95%B0%E6%8D%AE%E5%BA%93%E8%BF%9E%E6%8E%A5%E6%B1%A0%E4%B8%AD%E7%9A%84%E5%AE%9E%E8%B7%B5/" />
 <meta property="og:image" content="/img/author_image.jpg"/>
@@ -23,7 +24,7 @@
 <meta name="twitter:image" content="/img/author_image.jpg"/>
 
 <meta name="twitter:title" content="[GO]Context在golang数据库连接池中的实践"/>
-<meta name="twitter:description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置超时，以便整个ctx可以控制在预期的时间内执行，超时则不再继续执行，另外context也内置了deadline属性，开发者可以方便的控制自己的goroutine情况 。"/>
+<meta name="twitter:description" content="我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置一个超时，以便整个ctx树可以控制在预期的时间内执行完，不管【成功/失败】，另外context也内置了deadline属性，开发者可以方便的控制自己开启的goroutine情况 。"/>
 
     <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js"></script>
 </head><body><header>
@@ -106,14 +107,18 @@
                 </div>
 
             <div class="content">
-            <p>我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置超时，以便整个ctx可以控制在预期的时间内执行，超时则不再继续执行，另外context也内置了deadline属性，开发者可以方便的控制自己的goroutine情况 。</p>
+            <p>我们都知道使用ctx可以控制goroutine，比如取消goroutine树，或者给ctx设置一个超时，以便整个ctx树可以控制在预期的时间内执行完，不管【成功/失败】，另外context也内置了deadline属性，开发者可以方便的控制自己开启的goroutine情况 。</p>
 <h1 id="transaction-and-ctx">transaction and ctx</h1>
-<p>golang在database/sql中实现的连接池，大量的使用ctx特性，举一个常见的例子：有一个需求，如果一个transaction执行的时间超过了5s则返回超时错误，并且回滚transaction，这样做的理由有两个实际的意义。</p>
+<p>golang在database/sql中的连接池和ctx深度结合，为了理解在日常后端开发中如何使用ctx这种特性帮助大家更好的开发。举一个常见的例子：
+有一个需求，
+1: 如果一个事物执行的时间超过了5s就返回超时错误。
+2: 回滚事物，释放资源。</p>
+<p>网络世界总是极端复杂的，网络抖动，数据库block，机房掉电等等，所以当超过预期时间了没有返回结果，程序可以自主的做一些事情，那么带有上下文的事物至少有以下两个 好处</p>
 <ul>
-<li>前台用户不需要等待更久的时间</li>
-<li>一个执行不会一直占住一个连接（connection）</li>
+<li>前台用户不需要等待更久的时间【正常应该是1s执行完的程序，如果5s都没有返回】</li>
+<li>一个执行不会一直占住一个连接（connection） 【数据库的连接是有限的】</li>
 </ul>
-<p>假设我们现在开启一个transaction对db中的表做一些操作</p>
+<p>我们看以下上面说的，具体的代码示例</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#f92672">package</span> <span style="color:#a6e22e">main</span>
 
 <span style="color:#f92672">import</span> (
@@ -163,16 +168,16 @@
 }
 
 </code></pre></div><ul>
-<li>1 连接mysql，默认的database为db</li>
-<li>2 新增一个ctx，从Background开始，带有5s的超时，五秒之后ctx.Done会关闭，ctx.err = <code>context deadline exceeded</code></li>
-<li>3 <code>BeginTx(ctx, nil)</code>, 这样tx就带有了ctx</li>
-<li>4 无论如何都执行rollback，确保资源释放</li>
-<li>5 执行一条sql语句</li>
-<li>6 强制sleep五秒</li>
-<li>7 再次执行一条sql，这个时候会报错，因为ctx超时了。</li>
-<li>8 错误信息 <code>sql: transaction has already been committed or rolled back</code></li>
+<li>连接mysql，默认的database为db</li>
+<li>新增一个ctx，从Background开始，带有5s的超时，五秒之后ctx.Done会关闭，ctx.err = <code>context deadline exceeded</code></li>
+<li><code>BeginTx(ctx, nil)</code>, tx bind ctx</li>
+<li>无论如何都执行rollback，确保资源释放</li>
+<li>执行一条sql语句</li>
+<li>强制sleep五秒</li>
+<li>再次执行一条sql，这个时候会报错，因为ctx超时了。</li>
+<li>错误信息 <code>sql: transaction has already been committed or rolled back</code></li>
 </ul>
-<p>那么问题就是，为什么会发生这样的错误，这样的错误符合我们的预期，但是并不是ctx的错误，这个我们后面再讲为什么会这样。</p>
+<p>那么问题就是，为什么会发生这样的错误，这样的错误不符合我们的预期，因为不是ctx超时后的错误，这个我们后面再讲为什么会这样。</p>
 <p>首先<code>BeginTx(...)</code>注入了ctx，注入的ctx做了如下的工作。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#75715e">// 继承begintx传递进来的ctx
 </span><span style="color:#75715e"></span><span style="color:#a6e22e">ctx</span>, <span style="color:#a6e22e">cancel</span> <span style="color:#f92672">:=</span> <span style="color:#a6e22e">context</span>.<span style="color:#a6e22e">WithCancel</span>(<span style="color:#a6e22e">ctx</span>)
@@ -204,7 +209,7 @@
     <span style="color:#75715e">// ......
 </span><span style="color:#75715e"></span>}
 </code></pre></div><ul>
-<li><code>BeginTx</code>开启了了带有ctx的tx，然后监控ctx是否done</li>
+<li><code>BeginTx</code>开启了了带有ctx的tx，然后监控【go awaitDone()】ctx是否done</li>
 <li>如果<code>ctx.Done</code>, 那么则回滚tx，释放资源，设置<code>tx.Done = 1</code></li>
 </ul>
 <p>那么获得了<code>tx.Done = 1</code>有什么意义呢？ 之前我们出错的地方是exec的地方。让我们看下这段代码发生了什么。</p>
@@ -238,7 +243,7 @@
 <li>如果是没有设置ctx那么返回database/sql的自定义错误</li>
 </ul>
 <h1 id="事务excequery都带上ctx">事务/exce/query都带上ctx</h1>
-<p>让我们来看下，如果执行ExecContext的话，就会返回ctx的错误，比如在case中的我们设置的是ctx.WithTimeout(parent, duration), 翻看context.go可以看到内置的错误是<code>context deadline exceeded</code> 。</p>
+<p>让我们来看下，如果执行ExecContext的话，就会返回ctx的错误，比如在上面的case中我们设置的是ctx.WithTimeout(parent, duration), 翻看context.go源码可以看到内置的错误是<code>context deadline exceeded</code> 。</p>
 <div class="highlight"><pre style="color:#f8f8f2;background-color:#272822;-moz-tab-size:4;-o-tab-size:4;tab-size:4"><code class="language-go" data-lang="go"><span style="color:#f92672">package</span> <span style="color:#a6e22e">main</span>
 
 <span style="color:#f92672">import</span> (
@@ -297,11 +302,11 @@
 </ul>
 <h1 id="总结">总结</h1>
 <ul>
-<li>如果是tx，建议带上ctx，这样可以控制执行的时间</li>
+<li>如果是数据库tx操作，建议带上ctx参数，设置超时之后，可以主动控制程序的资源。</li>
 <li>真正执行的函数，建议按照xxxContext()的方式执行,这样父节点ctx取消之后，所有子节点的ctx都能感应到。</li>
-<li>就算不是事务执行，如果对于时间有限制的话，也建议带上ctx</li>
-<li>ctx通过WithTimeout/WithDeadline等copy之后，内部会检查父ctx是否有效，如果无效，则取消所有的子节点，并且close ctx.done， 设置ctx.err</li>
-<li>业务代码，如database/sql则需要自己监控ctx.Done()的状态，来决定是否需要继续往下执行</li>
+<li>就算不是事务执行，如果对于时间有限制的话，也建议带上ctx，比如长查询。</li>
+<li>ctx通过WithTimeout/WithDeadline等copy parent之后获得了child ctx，内部会一直检查父ctx是否有效，如果无效，则取消所有的子节点，并且close ctx.done， 设置ctx.err。</li>
+<li>内部包，如果使用了ctx，自身需要监控ctx.Done状态。</li>
 </ul>
 <h1 id="link">Link</h1>
 <ul>
